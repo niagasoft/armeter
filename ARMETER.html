@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Pro AR Wall & Object Dimension Engine</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: rgba(15, 23, 42, 0.88);
+      --accent-color: #38bdf8;
+      --text-color: #f8fafc;
+    }
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background-color: #000;
+      color: #fff;
+    }
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-sizing: border-box;
+      padding: 20px;
+    }
+    .hud-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      border-radius: 16px;
+      padding: 16px;
+      text-align: center;
+      pointer-events: auto;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    }
+    .hud-title {
+      font-size: 0.75rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      font-weight: 700;
+    }
+    .hud-value {
+      font-size: 2.5rem;
+      font-weight: 800;
+      color: #38bdf8;
+      margin: 4px 0;
+      text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+    }
+    .hud-unit {
+      font-size: 0.85rem;
+      color: #e2e8f0;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      pointer-events: auto;
+      margin-bottom: 20px;
+    }
+    .btn {
+      flex: 1;
+      min-width: 100px;
+      padding: 14px 10px;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      transition: transform 0.1s ease;
+    }
+    .btn:active { transform: scale(0.96); }
+    .btn-add { background: #22c55e; color: #fff; }
+    .btn-save { background: #3b82f6; color: #fff; }
+    .btn-reset { background: #ef4444; color: #fff; }
+    #ar-button-container {
+      position: absolute;
+      bottom: 110px;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: auto;
+      z-index: 999;
+    }
+  </style>
+
+  <!-- Module Three.js & WebXR via CDN -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <div id="ar-button-container"></div>
+
+  <div id="overlay">
+    <div class="hud-card">
+      <div class="hud-title">Pengukuran Dimensi Tembok (AR 3D)</div>
+      <div id="measureValue" class="hud-value">0.0 cm</div>
+      <div id="statusText" class="hud-unit">Tekan "START AR" untuk mengaktifkan kamera</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-add" id="addPointBtn">📍 Tandai Titik</button>
+      <button class="btn btn-save" id="saveBtn">💾 Simpan Laporan</button>
+      <button class="btn btn-reset" id="resetBtn">🔄 Reset</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { ARButton } from 'three/addons/webxr/ARButton.js';
+
+    let container, scene, camera, renderer;
+    let reticle;
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+
+    let points = [];
+    let lineMesh = null;
+    let pointMarkers = [];
+    let measurementHistory = [];
+
+    init();
+    animate();
+
+    function init() {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+      scene.add(light);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      container.appendChild(renderer.domElement);
+
+      // Inisialisasi Tombol Start AR
+      const arButton = ARButton.createButton(renderer, {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['dom-overlay'],
+        domOverlay: { root: document.getElementById('overlay') }
+      });
+      document.getElementById('ar-button-container').appendChild(arButton);
+
+      // Target Ring Reticle
+      reticle = new THREE.Mesh(
+        new THREE.RingGeometry(0.03, 0.04, 32).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
+      );
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
+
+      // Event Listeners
+      document.getElementById('addPointBtn').addEventListener('click', addPoint);
+      document.getElementById('saveBtn').addEventListener('click', saveReportToFile);
+      document.getElementById('resetBtn').addEventListener('click', resetPoints);
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function addPoint() {
+      if (reticle.visible) {
+        const position = new THREE.Vector3();
+        position.setFromMatrixPosition(reticle.matrix);
+
+        // Marker Bola 3D
+        const sphereGeo = new THREE.SphereGeometry(0.012, 16, 16);
+        const sphereMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
+        const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+        sphere.position.copy(position);
+        scene.add(sphere);
+        pointMarkers.push(sphere);
+
+        points.push(position);
+
+        if (points.length >= 2) {
+          updateMeasurement();
+        } else {
+          document.getElementById('statusText').innerText = "Titik 1 terkunci. Arahkan ke titik 2 lalu tekan Tandai Titik.";
+        }
+      } else {
+        alert("Arahkan kamera ke permukaan tembok sampai lingkaran biru muncul!");
+      }
+    }
+
+    function updateMeasurement() {
+      const p1 = points[points.length - 2];
+      const p2 = points[points.length - 1];
+
+      const distanceMeters = p1.distanceTo(p2);
+      const distanceCm = (distanceMeters * 100).toFixed(1);
+
+      let formattedText = distanceMeters >= 1 
+        ? `${distanceMeters.toFixed(2)} m` 
+        : `${distanceCm} cm`;
+
+      document.getElementById('measureValue').innerText = formattedText;
+      document.getElementById('statusText').innerText = `Jarak antar titik: ${formattedText}`;
+
+      // Catat ke riwayat untuk diunduh
+      measurementHistory.push({
+        id: measurementHistory.length + 1,
+        time: new Date().toLocaleTimeString('id-ID'),
+        p1: { x: p1.x.toFixed(3), y: p1.y.toFixed(3), z: p1.z.toFixed(3) },
+        p2: { x: p2.x.toFixed(3), y: p2.y.toFixed(3), z: p2.z.toFixed(3) },
+        distanceMeter: distanceMeters.toFixed(3),
+        distanceText: formattedText
+      });
+
+      // Garis Laser 3D
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 5 });
+
+      if (lineMesh) scene.remove(lineMesh);
+      lineMesh = new THREE.Line(lineGeo, lineMat);
+      scene.add(lineMesh);
+    }
+
+    // Fungsi Mengunduh Laporan Hasil Pengukuran ke File TXT
+    function saveReportToFile() {
+      if (measurementHistory.length === 0) {
+        alert("Belum ada data hasil pengukuran yang terekam!");
+        return;
+      }
+
+      let reportContent = "===========================================\n";
+      reportContent += "   LAPORAN HASIL PENGUKURAN AR TEMBOK 3D   \n";
+      reportContent += "===========================================\n";
+      reportContent += `Waktu Unduh    : ${new Date().toLocaleString('id-ID')}\n`;
+      reportContent += `Total Segmen   : ${measurementHistory.length} Pengukuran\n\n`;
+
+      measurementHistory.forEach(item => {
+        reportContent += `--- Pengukuran #${item.id} [Jam ${item.time}] ---\n`;
+        reportContent += `Koordinat Titik A (X,Y,Z) : (${item.p1.x}, ${item.p1.y}, ${item.p1.z})\n`;
+        reportContent += `Koordinat Titik B (X,Y,Z) : (${item.p2.x}, ${item.p2.y}, ${item.p2.z})\n`;
+        reportContent += `Hasil Jarak / Tinggi      : ${item.distanceText} (${item.distanceMeter} meter)\n\n`;
+      });
+
+      reportContent += "===========================================\n";
+      reportContent += "Generated by Pro AR Wall Dimension Engine\n";
+
+      const blob = new Blob([reportContent], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `Laporan_Pengukuran_AR_${Date.now()}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function resetPoints() {
+      points = [];
+      pointMarkers.forEach(m => scene.remove(m));
+      pointMarkers = [];
+      if (lineMesh) {
+        scene.remove(lineMesh);
+        lineMesh = null;
+      }
+      document.getElementById('measureValue').innerText = "0.0 cm";
+      document.getElementById('statusText').innerText = "Arahkan kamera ke permukaan tembok";
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      renderer.setAnimationLoop(render);
+    }
+
+    function render(timestamp, frame) {
+      if (frame) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
+
+        if (hitTestSourceRequested === false) {
+          session.requestReferenceSpace('viewer').then((referenceSpace) => {
+            session.requestHitTestSource({ space: referenceSpace }).then((source) => {
+              hitTestSource = source;
+            });
+          });
+          session.addEventListener('end', () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+          });
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          const hitTestResults = frame.getHitTestResults(hitTestSource);
+          if (hitTestResults.length > 0) {
+            const hit = hitTestResults[0];
+            reticle.visible = true;
+            reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
