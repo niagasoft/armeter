@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meteran Foto 2D - Niagasoft</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #fff; margin: 0; padding: 15px; text-align: center; }
+    .card { background: #1e293b; padding: 15px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #334155; }
+    .btn { padding: 12px 14px; background: #38bdf8; color: #0f172a; border: none; font-weight: bold; border-radius: 8px; cursor: pointer; margin: 4px; }
+    .btn-green { background: #22c55e; color: #fff; }
+    .btn-red { background: #ef4444; color: #fff; }
+    input[type="number"], input[type="file"] { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; }
+    #output { font-size: 1.2rem; font-weight: bold; color: #38bdf8; margin-top: 10px; }
+    #canvas-container { max-width: 100%; overflow: auto; }
+    canvas { max-width: 100%; border: 2px solid #38bdf8; border-radius: 8px; cursor: crosshair; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h3>Meteran Foto 2D (Kalibrasi Acuan)</h3>
+    <input type="file" id="imageInput" accept="image/*" capture="environment">
+    <div style="margin-top: 10px;">
+      <button class="btn" onclick="setMode('ref')">1. Tandai Acuan (KTP/Ruler)</button>
+      <button class="btn btn-green" onclick="setMode('measure')">2. Ukur Tembok/Objek</button>
+      <button class="btn btn-red" onclick="resetCanvas()">Reset</button>
+    </div>
+    <div style="margin-top: 10px;">
+      Panjang Asli Acuan: <input type="number" id="refRealValue" value="8.56" step="0.1" style="width: 70px;"> cm
+    </div>
+    <div id="output">Pilih atau foto objek beserta barang acuan</div>
+  </div>
+
+  <div id="canvas-container">
+    <canvas id="photoCanvas"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('photoCanvas');
+    const ctx = canvas.getContext('2d');
+    const imageInput = document.getElementById('imageInput');
+    const output = document.getElementById('output');
+
+    let img = new Image();
+    let mode = 'ref';
+    let points = [];
+    let pxPerCm = 0;
+
+    imageInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        img.onload = () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          drawImage();
+          output.innerText = "Foto siap! Klik 2 titik pada objek acuan (misal: panjang KTP).";
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function drawImage() {
+      ctx.drawImage(img, 0, 0);
+    }
+
+    function setMode(m) {
+      mode = m;
+      points = [];
+      if (m === 'ref') {
+        output.innerText = "Mode Acuan: Klik 2 titik pada objek acuan di foto.";
+      } else {
+        if (pxPerCm === 0) {
+          alert("Kalibrasi objek acuan dulu sebelum mengukur!");
+          mode = 'ref';
+          return;
+        }
+        output.innerText = "Mode Ukur: Klik 2 titik pada tembok/benda yang mau diukur.";
+      }
+    }
+
+    canvas.addEventListener('click', (e) => {
+      if (!img.src) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
+
+      points.push({x, y});
+
+      ctx.fillStyle = mode === 'ref' ? '#ef4444' : '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(x, y, canvas.width * 0.008, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (points.length === 2) {
+        const p1 = points[0];
+        const p2 = points[1];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const distancePx = Math.sqrt(dx * dx + dy * dy);
+
+        ctx.strokeStyle = mode === 'ref' ? '#ef4444' : '#38bdf8';
+        ctx.lineWidth = canvas.width * 0.004;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+
+        if (mode === 'ref') {
+          const realVal = parseFloat(document.getElementById('refRealValue').value) || 8.56;
+          pxPerCm = distancePx / realVal;
+          output.innerText = `Kalibrasi Sukses! Tekan tombol '2. Ukur Tembok/Objek'.`;
+        } else {
+          const realDistanceCm = distancePx / pxPerCm;
+          const resultText = realDistanceCm >= 100 
+            ? `${(realDistanceCm / 100).toFixed(2)} meter` 
+            : `${realDistanceCm.toFixed(1)} cm`;
+          output.innerText = `Hasil Pengukuran: ${resultText}`;
+        }
+        points = [];
+      }
+    });
+
+    function resetCanvas() {
+      if (!img.src) return;
+      drawImage();
+      points = [];
+      pxPerCm = 0;
+      mode = 'ref';
+      output.innerText = "Reset berhasil. Tandai ulang objek acuan.";
+    }
+  </script>
+</body>
+</html>
